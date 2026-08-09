@@ -1,0 +1,16 @@
+__pycache__/
+*.pyc
+*.pyo
+
+.venv/
+venv/
+env/
+
+*.egg-info/
+.pytest_cache/
+
+# Written to the project root at startup by apex_diff.py (backend.export)
+ApexDiffOutput.html
+
+.vscode/
+.idea/
