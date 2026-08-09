@@ -216,45 +216,53 @@ Returns full detail including file contents.
 
 ## Project Structure
 
+`apex-org-diff` lives as one tool inside a shared parent repo. `samples/` sits one
+level up, at the repo root, so it can be reused by other QOL scripts — not just
+this tool.
+
 ```
-apex-org-diff/
+<repo root>/
 │
-├── apex_diff.py          ← Entry point (CLI + server startup)
-│
-├── backend/
-│   ├── __init__.py
-│   ├── models.py         ← Data models (ClassStatus, ApexClassMeta, etc.)
-│   ├── scanner.py        ← File scanning & in-memory diff index
-│   ├── api.py            ← FastAPI routes
-│   └── export.py         ← Standalone HTML export (no server required)
-│
-├── frontend/
-│   ├── index.html        ← Single-page app HTML
-│   ├── styles.css        ← Dark developer UI styles
-│   └── app.js            ← Monaco DiffEditor integration + sidebar logic
-│
-├── samples/               ← Generated fixture orgs used for manual testing
+├── samples/                ← Shared fixture orgs, used by any QOL script
 │   ├── create_sample_orgs.py
 │   ├── sample_org1/
 │   └── sample_org2/
 │
-├── scripts/               ← Manual dev/debug scripts (not pytest)
-│   ├── test_backend.py
-│   └── check_stats.py
-│
-├── requirements.txt
-└── README.md
+└── apex-org-diff/
+    │
+    ├── apex_diff.py          ← Entry point (CLI + server startup)
+    │
+    ├── backend/
+    │   ├── __init__.py
+    │   ├── models.py         ← Data models (ClassStatus, ApexClassMeta, etc.)
+    │   ├── scanner.py        ← File scanning & in-memory diff index
+    │   ├── api.py            ← FastAPI routes
+    │   └── export.py         ← Standalone HTML export (no server required)
+    │
+    ├── frontend/
+    │   ├── index.html        ← Single-page app HTML
+    │   ├── styles.css        ← Dark developer UI styles
+    │   └── app.js            ← Monaco DiffEditor integration + sidebar logic
+    │
+    ├── scripts/               ← Manual dev/debug scripts (not pytest)
+    │   ├── test_backend.py
+    │   └── check_stats.py
+    │
+    ├── requirements.txt
+    └── README.md
 ```
 
 ### Development scripts
 
-Run these from the repo root:
+`scripts/test_backend.py` and `scripts/check_stats.py` locate `samples/` and the
+`backend` package relative to their own file path, so they can be run from any
+working directory:
 
 ```bash
-python samples/create_sample_orgs.py   # (re)generate the sample_org1 / sample_org2 fixtures
-python scripts/test_backend.py         # exercises DiffIndex + FastAPI app end-to-end, prints results
-python scripts/check_stats.py          # prints diff line-stats for the sample orgs
-python apex_diff.py samples/sample_org1 samples/sample_org2   # try the tool on the fixtures
+python ../samples/create_sample_orgs.py   # (re)generate the sample_org1 / sample_org2 fixtures
+python scripts/test_backend.py            # exercises DiffIndex + FastAPI app end-to-end, prints results
+python scripts/check_stats.py             # prints diff line-stats for the sample orgs
+python apex_diff.py ../samples/sample_org1 ../samples/sample_org2   # try the tool on the fixtures
 ```
 
 ---
