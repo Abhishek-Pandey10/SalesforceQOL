@@ -35,6 +35,10 @@ logger = logging.getLogger(__name__)
 _SCAN_TIMEOUT_SECONDS = 30
 
 _UNRESOLVED_NEW_RE = re.compile(r"\bnew\s+([A-Za-z_]\w*)\s*\(")
+# Matches `import ALIAS from 'c/componentName'` in LWC JS files so we can
+# count references to bundles that are not present in the scanned org folder.
+_UNRESOLVED_LWC_IMPORT_RE = re.compile(r"""import\s+\w+\s+from\s+['"]c/(\w+)['"]"""
+)
 
 
 def _is_bundle_dir(dirname: str, filenames: List[str]) -> bool:
@@ -103,24 +107,28 @@ def _read_all(paths: List[Path]) -> Dict[Path, str]:
     if not paths:
         return {}
     max_workers = min(64, len(paths))
-    executor = ThreadPoolExecutor(max_workers=max_workers)
-    futures = {executor.submit(_read_file_safe, p): p for p in paths}
-    done, not_done = futures_wait(futures.keys(), timeout=_SCAN_TIMEOUT_SECONDS)
+    # Use the executor as a context manager so shutdown(wait=True) is
+    # guaranteed even if futures_wait raises. The wait is near-instant here
+    # because futures_wait has already imposed the real timeout budget; any
+    # not_done futures are cancelled before the `with` block exits.
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = {executor.submit(_read_file_safe, p): p for p in paths}
+        done, not_done = futures_wait(futures.keys(), timeout=_SCAN_TIMEOUT_SECONDS)
 
-    result: Dict[Path, str] = {}
-    for future in done:
-        path = futures[future]
-        content = future.result()
-        if content is not None:
-            result[path] = content
-    for future in not_done:
-        path = futures[future]
-        logger.warning(
-            "Timed out after %ds reading %s - likely a cloud-only file "
-            "(OneDrive/Dropbox/etc.) that hasn't finished downloading locally.",
-            _SCAN_TIMEOUT_SECONDS, path,
-        )
-    executor.shutdown(wait=False)
+        result: Dict[Path, str] = {}
+        for future in done:
+            path = futures[future]
+            content = future.result()
+            if content is not None:
+                result[path] = content
+        for future in not_done:
+            future.cancel()
+            path = futures[future]
+            logger.warning(
+                "Timed out after %ds reading %s - likely a cloud-only file "
+                "(OneDrive/Dropbox/etc.) that hasn't finished downloading locally.",
+                _SCAN_TIMEOUT_SECONDS, path,
+            )
     return result
 
 
@@ -240,9 +248,21 @@ class DependencyGraph:
         for path, content in apex_contents.items():
             self_id = apex_self_id_by_path[path]
             rel_path = str(path.relative_to(root)).replace("\\", "/")
-            header, occs = parse_apex_file(content, rel_path, self_id, apex_symbol_table)
+            # Pass the already-stripped text from Pass 1 to avoid stripping twice.
+            header, occs = parse_apex_file(
+                content, rel_path, self_id, apex_symbol_table,
+                pre_stripped=apex_stripped_by_path[path],
+            )
             for target_id, occ in occs:
                 edge_occurrences[(self_id, target_id)].append(occ)
+
+            # Track unresolved extends / implements (types not present in this org).
+            if header:
+                if header.extends and header.extends.lower() not in apex_symbol_table:
+                    unresolved_names.add(header.extends)
+                for impl_name in header.implements:
+                    if impl_name.lower() not in apex_symbol_table:
+                        unresolved_names.add(impl_name)
 
             for m in _UNRESOLVED_NEW_RE.finditer(apex_stripped_by_path[path]):
                 name = m.group(1)
@@ -260,6 +280,12 @@ class DependencyGraph:
                     occs = parse_lwc_js(content, original_rel, self_id, apex_symbol_table, lwc_symbol_table)
                     for target_id, occ in occs:
                         edge_occurrences[(self_id, target_id)].append(occ)
+                    # Track unresolved c/ component imports (components referenced
+                    # but not found in the scanned org folder).
+                    for m in _UNRESOLVED_LWC_IMPORT_RE.finditer(content):
+                        child_name = m.group(1)
+                        if child_name.lower() not in lwc_symbol_table:
+                            unresolved_names.add(child_name)
                 elif rel_lower.endswith(".html"):
                     occs = parse_lwc_html(content, original_rel, self_id, lwc_symbol_table)
                     for target_id, occ in occs:

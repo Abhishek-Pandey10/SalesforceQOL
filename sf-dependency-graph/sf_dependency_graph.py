@@ -21,6 +21,7 @@ from __future__ import annotations
 import argparse
 import logging
 import sys
+import tempfile
 import threading
 import time
 import webbrowser
@@ -102,7 +103,9 @@ def write_debug_export(graph: DependencyGraph) -> None:
         return
 
     html = build_full_export_html(graph.get_summary(), full_graph)
-    debug_path = PROJECT_ROOT / "DependencyGraphOutput.html"
+    # Write to the OS temp directory, not next to the source files, so the
+    # file never shows up in `git status` or cloud-sync noise.
+    debug_path = Path(tempfile.gettempdir()) / "DependencyGraphOutput.html"
     debug_path.write_text(html, encoding="utf-8")
     logger.info(
         "Wrote a full graph report (%d nodes, %d edges) to %s — open it "

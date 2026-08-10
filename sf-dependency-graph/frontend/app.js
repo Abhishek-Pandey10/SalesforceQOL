@@ -148,17 +148,21 @@ async function fetchJSON(url) {
 }
 
 async function waitUntilReady() {
+  const start = Date.now();
   for (let i = 0; i < 300; i++) {
     try {
       await fetchJSON('/api/summary');
       return;
     } catch (err) {
       if (!err.building) throw err;
-      $('loading-text').textContent = 'Building dependency graph… (this can take a moment for large orgs)';
+      const elapsed = Math.round((Date.now() - start) / 1000);
+      $('loading-text').textContent = elapsed < 2
+        ? 'Building dependency graph…'
+        : `Building dependency graph… (${elapsed}s — large orgs can take a minute)`;
       await new Promise((r) => setTimeout(r, 1000));
     }
   }
-  throw new Error('Timed out waiting for the graph to build.');
+  throw new Error('Timed out waiting for the graph to build (5 min).');
 }
 
 let _toastTimer = null;

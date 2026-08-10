@@ -54,6 +54,7 @@ def create_app(graph: DependencyGraph) -> FastAPI:
                         "status": "building",
                         "detail": "Graph is still being built. Try again shortly.",
                     },
+                    headers={"Retry-After": "1"},
                 )
         return await call_next(request)
 
@@ -121,7 +122,21 @@ def create_app(graph: DependencyGraph) -> FastAPI:
         _reject_if_ambiguous(g, name)
 
         depth_param = request.query_params.get("depth", "2")
-        depth: Optional[int] = None if depth_param.lower() == "all" else int(depth_param)
+        if depth_param.lower() == "all":
+            depth: Optional[int] = None
+        else:
+            try:
+                depth = int(depth_param)
+            except ValueError:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"'depth' must be a positive integer or 'all', got {depth_param!r}.",
+                )
+            if depth < 1:
+                raise HTTPException(
+                    status_code=400,
+                    detail="'depth' must be >= 1.",
+                )
         direction = request.query_params.get("direction", "both")
         if direction not in ("both", "upstream", "downstream"):
             raise HTTPException(status_code=400, detail="direction must be one of: both, upstream, downstream")

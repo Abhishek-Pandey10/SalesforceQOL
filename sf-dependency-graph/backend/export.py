@@ -16,6 +16,7 @@ Two variants:
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import Optional
 
@@ -35,21 +36,31 @@ def _build_page(payload: dict, title_suffix: str) -> str:
     # contain that text) so they can't prematurely close the inline block.
     payload_json = json.dumps(payload, ensure_ascii=False).replace("</", "<\\/")
 
+    # Title replacement: the title tag is unlikely to be reformatted, so a
+    # plain string replace is fine here.
     index_html = index_html.replace(
         "<title>SF Dependency Graph — Apex/LWC Blast Radius</title>",
         f"<title>SF Dependency Graph — {title_suffix}</title>",
         1,
     )
-    index_html = index_html.replace(
-        '<link rel="stylesheet" href="/static/styles.css" />',
-        f"<style>\n{styles_css}\n</style>",
-        1,
+
+    # Styles: anchored on the <!-- INJECT:STYLES --> marker comment so
+    # reformatting the <link> tag can never silently break the export.
+    index_html = re.sub(
+        r"<!--\s*INJECT:STYLES\s*--><link[^>]*/>",
+        f"<!-- INJECT:STYLES --><style>\n{styles_css}\n</style>",
+        index_html,
+        count=1,
     )
-    index_html = index_html.replace(
-        '<script src="/static/app.js"></script>',
-        f'<script>window.__EXPORT_DATA__ = {payload_json};</script>\n'
+
+    # Script: same marker-anchored approach; also embeds the export payload
+    # as window.__EXPORT_DATA__ before the inlined app.js.
+    index_html = re.sub(
+        r"<!--\s*INJECT:SCRIPT\s*--><script[^>]*></script>",
+        f"<!-- INJECT:SCRIPT --><script>window.__EXPORT_DATA__ = {payload_json};</script>\n"
         f"<script>\n{app_js}\n</script>",
-        1,
+        index_html,
+        count=1,
     )
     return index_html
 

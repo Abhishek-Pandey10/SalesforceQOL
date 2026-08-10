@@ -76,19 +76,23 @@ def strip_comments_and_strings(text: str) -> str:
                 j += 1
             i = j
         elif ch == "/" and i + 1 < n and text[i + 1] == "*":
+            # Bug fix: old loop used `j + 1 < n` which stopped one character
+            # short when the comment was never closed, leaving a real identifier
+            # character un-blanked and causing false-positive edge matches.
             j = i
             out[j] = " "
             if j + 1 < n:
                 out[j + 1] = " "
             j += 2
-            while j + 1 < n and not (text[j] == "*" and text[j + 1] == "/"):
+            while j < n:
+                if j + 1 < n and text[j] == "*" and text[j + 1] == "/":
+                    out[j] = " "
+                    out[j + 1] = " "
+                    j += 2
+                    break
                 if text[j] != "\n":
                     out[j] = " "
                 j += 1
-            if j + 1 < n:
-                out[j] = " "
-                out[j + 1] = " "
-                j += 2
             i = j
         elif ch == "'":
             j = i
@@ -161,11 +165,15 @@ def find_method_spans(stripped: str) -> List[Tuple[int, int, str]]:
             depth += 1
             last_boundary = i + 1
         elif ch == "}":
-            depth = max(0, depth - 1)
-            if stack:
-                _open_depth, start_off, name = stack.pop()
-                if name:
-                    spans.append((start_off, i, name))
+            # Bug fix: the old `max(0, depth - 1)` guard let depth stay at 0
+            # while still popping a stack frame for a stray `}`, corrupting
+            # every subsequent method-span attribution below that point.
+            if depth > 0:
+                depth -= 1
+                if stack:
+                    _open_depth, start_off, name = stack.pop()
+                    if name:
+                        spans.append((start_off, i, name))
             last_boundary = i + 1
         elif ch == ";":
             last_boundary = i + 1
@@ -174,7 +182,16 @@ def find_method_spans(stripped: str) -> List[Tuple[int, int, str]]:
 
 
 def _method_at(spans: List[Tuple[int, int, str]], offset: int) -> Optional[str]:
-    for start, end, name in spans:
+    """Return the method name whose span contains *offset*, or None.
+    Uses binary search (O(log n)) instead of a linear scan: spans are
+    non-overlapping and sorted by start_off, so bisect_right gives the
+    candidate index in one step."""
+    if not spans:
+        return None
+    starts = [s[0] for s in spans]
+    idx = bisect_right(starts, offset) - 1
+    if idx >= 0:
+        start, end, name = spans[idx]
         if start <= offset < end:
             return name
     return None
@@ -254,6 +271,8 @@ def parse_apex_file(
     rel_path: str,
     self_id: str,
     symbol_table: Dict[str, str],
+    *,
+    pre_stripped: Optional[str] = None,
 ) -> Tuple[Optional[TypeHeader], List[Tuple[str, Occurrence]]]:
     """
     Parse one Apex file's text.
@@ -261,9 +280,12 @@ def parse_apex_file(
     symbol_table maps lowercased class/interface/trigger name -> node id for
     every Apex type known in the org (excluding this file's own type).
 
+    pre_stripped: pass the already-computed strip_comments_and_strings() result
+    to avoid doing the work twice (graph_builder computes it in Pass 1).
+
     Returns (type_header, [(target_node_id, Occurrence), ...]).
     """
-    stripped = strip_comments_and_strings(original_text)
+    stripped = pre_stripped if pre_stripped is not None else strip_comments_and_strings(original_text)
     line_starts = _line_offsets(original_text)
     original_lines = original_text.splitlines()
     method_spans = find_method_spans(stripped)

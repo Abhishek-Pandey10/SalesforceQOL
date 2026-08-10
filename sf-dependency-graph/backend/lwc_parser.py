@@ -47,19 +47,23 @@ def _strip_js_comments_and_strings(text: str) -> str:
                 j += 1
             i = j
         elif ch == "/" and i + 1 < n and text[i + 1] == "*":
+            # Bug fix: mirror of apex_parser.py — old loop stopped at
+            # `j + 1 < n`, leaving the last character of an unterminated
+            # block-comment un-blanked and producing false-positive matches.
             j = i
             out[j] = " "
             if j + 1 < n:
                 out[j + 1] = " "
             j += 2
-            while j + 1 < n and not (text[j] == "*" and text[j + 1] == "/"):
+            while j < n:
+                if j + 1 < n and text[j] == "*" and text[j + 1] == "/":
+                    out[j] = " "
+                    out[j + 1] = " "
+                    j += 2
+                    break
                 if text[j] != "\n":
                     out[j] = " "
                 j += 1
-            if j + 1 < n:
-                out[j] = " "
-                out[j + 1] = " "
-                j += 2
             i = j
         elif ch in quote_chars:
             delim = ch
