@@ -230,14 +230,18 @@ def _render_diff_body(detail: dict) -> Tuple[str, str, str]:
         code_b = None
 
     if code_a is None and code_b is None:
-        lines_a = (org_a.get("content") or "").split("\n")
-        lines_b = (org_b.get("content") or "").split("\n")
+        # splitlines(), not split("\n"): the latter appends a phantom empty
+        # element whenever content ends in a newline (i.e. almost always),
+        # which renders as a bogus extra blank line, and makes two files
+        # differing only in trailing-newline presence show a fake diff.
+        lines_a = (org_a.get("content") or "").splitlines()
+        lines_b = (org_b.get("content") or "").splitlines()
         code_a, code_b = _diff_columns(lines_a, lines_b)
     else:
         if code_a is None:
-            code_a = _plain_column((org_a.get("content") or "").split("\n"))
+            code_a = _plain_column((org_a.get("content") or "").splitlines())
         if code_b is None:
-            code_b = _plain_column((org_b.get("content") or "").split("\n"))
+            code_b = _plain_column((org_b.get("content") or "").splitlines())
 
     warning_banner = ""
     if error_a or error_b:

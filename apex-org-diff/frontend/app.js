@@ -51,6 +51,7 @@ const state = {
   summary:           null,
   currentDetail:     null,     // last loaded detail (for export)
   dataLoaded:        false,    // true once loadData() has populated allClasses, even if it's empty
+  markedForDeploy:   new Set(),  // class names marked for deployment (see "Mark for deploy" feature)
 };
 
 // ─── DOM refs ─────────────────────────────────────────────────────────────────
@@ -121,6 +122,18 @@ document.addEventListener('DOMContentLoaded', () => {
     btnShortcuts:      $('btn-shortcuts'),
     btnShortcutsClose: $('btn-shortcuts-close'),
     shortcutsOverlay:  $('shortcuts-overlay'),
+    btnToggleDeploy:   $('btn-toggle-deploy'),
+    btnDeployList:     $('btn-deploy-list'),
+    deployCountBadge:  $('deploy-count-badge'),
+    deployOverlay:     $('deploy-overlay'),
+    deployPanelCount:  $('deploy-panel-count'),
+    btnDeployClose:    $('btn-deploy-close'),
+    deployList:        $('deploy-list'),
+    deployEmpty:       $('deploy-empty'),
+    btnDeployCopy:     $('btn-deploy-copy'),
+    btnDeployTxt:      $('btn-deploy-txt'),
+    btnDeployXml:      $('btn-deploy-xml'),
+    btnDeployClear:    $('btn-deploy-clear'),
   };
 
   // The export button downloads a single class from a live backend endpoint
@@ -173,6 +186,12 @@ function initMonaco() {
         theme:                'vs-dark',
         readOnly:             true,
         renderSideBySide:     state.renderSideBySide,
+        // Monaco silently forces inline view below renderSideBySideInlineBreakpoint
+        // (900px) when this is left at its default (true) — that makes the layout
+        // toggle button appear broken whenever the sidebar is widened or the window
+        // is narrow, since clicking "Side by side" then has no visible effect. The
+        // toggle should always reflect the user's explicit choice.
+        useInlineViewWhenSpaceIsLimited: false,
         minimap:              { enabled: true },
         fontSize:             13,
         fontFamily:           "'JetBrains Mono', 'Fira Code', monospace",
@@ -424,6 +443,15 @@ function initEvents() {
   // (rows are re-created on every scroll/filter, so per-row listeners would
   // mean constantly attaching/detaching hundreds of them).
   domRefs.classList.addEventListener('click', e => {
+    // The deploy checkbox lives inside the row button — handle it first and
+    // stop there, or checking it would also select/open the class.
+    const checkbox = e.target.closest('.deploy-checkbox');
+    if (checkbox) {
+      e.stopPropagation();
+      toggleDeployMark(checkbox.dataset.name);
+      return;
+    }
+
     const btn = e.target.closest('.class-item');
     if (!btn) return;
     const idx = parseInt(btn.dataset.index, 10);
@@ -462,6 +490,7 @@ function initEvents() {
   domRefs.btnToggleLayout.addEventListener('click', toggleLayout);
   domRefs.btnToggleWs.addEventListener('click', toggleWhitespace);
   domRefs.btnExport.addEventListener('click', exportDiff);
+  domRefs.btnToggleDeploy.addEventListener('click', toggleDeployForSelected);
 
   // Keyboard shortcuts help modal
   domRefs.btnShortcuts.addEventListener('click', openShortcuts);
@@ -469,6 +498,21 @@ function initEvents() {
   domRefs.shortcutsOverlay.addEventListener('click', e => {
     if (e.target === domRefs.shortcutsOverlay) closeShortcuts();
   });
+
+  // Deploy list modal
+  domRefs.btnDeployList.addEventListener('click', openDeployList);
+  domRefs.btnDeployClose.addEventListener('click', closeDeployList);
+  domRefs.deployOverlay.addEventListener('click', e => {
+    if (e.target === domRefs.deployOverlay) closeDeployList();
+  });
+  domRefs.deployList.addEventListener('click', e => {
+    const rm = e.target.closest('.deploy-item-remove');
+    if (rm) toggleDeployMark(rm.dataset.name);
+  });
+  domRefs.btnDeployCopy.addEventListener('click', copyDeployNames);
+  domRefs.btnDeployTxt.addEventListener('click', downloadDeployTxt);
+  domRefs.btnDeployXml.addEventListener('click', downloadDeployPackageXml);
+  domRefs.btnDeployClear.addEventListener('click', clearDeployList);
 
   // Click-to-copy org path badges
   initCopyPathHandlers();
@@ -551,6 +595,10 @@ function handleKeyboardNav(e) {
       closeShortcuts();
       return;
     }
+    if (domRefs.deployOverlay.classList.contains('visible')) {
+      closeDeployList();
+      return;
+    }
     if (document.activeElement === domRefs.searchInput && state.searchQuery) {
       domRefs.searchInput.value = '';
       state.searchQuery = '';
@@ -590,6 +638,9 @@ function handleKeyboardNav(e) {
     e.preventDefault();
     domRefs.searchInput.focus();
     domRefs.searchInput.select();
+  } else if (e.key === 'd' || e.key === 'D') {
+    e.preventDefault();
+    toggleDeployForSelected();
   }
 }
 
@@ -653,6 +704,16 @@ function toggleLayout() {
   state.renderSideBySide = !state.renderSideBySide;
   if (state.diffEditor) {
     state.diffEditor.updateOptions({ renderSideBySide: state.renderSideBySide });
+    // Monaco's diff editor can silently ignore this option once setModel() has
+    // been called since (e.g. from navigating to another class while inline) —
+    // see microsoft/monaco-editor#4286. Re-setting the models forces it to
+    // rebuild honoring the new value, the same path that works on initial load.
+    const detail = state.currentDetail;
+    if (detail) {
+      const scrollTop = state.diffEditor.getModifiedEditor().getScrollTop();
+      setEditorModels(detail.org_a?.content ?? '', detail.org_b?.content ?? '');
+      state.diffEditor.getModifiedEditor().setScrollTop(scrollTop);
+    }
   }
   renderLayoutButton();
   setPref('layout', state.renderSideBySide ? 'side-by-side' : 'inline');
@@ -686,7 +747,181 @@ function exportDiff() {
   window.location.href = `${API_BASE}/api/classes/${encodeURIComponent(detail.name)}/export`;
 }
 
+// ─── Deploy List ────────────────────────────────────────────────────────────
+// Lets a reviewer check off classes while going through the diff and get a
+// clean list at the end (copy/paste, a plain .txt, or a Salesforce
+// package.xml manifest for a deployment). Purely client-side — no backend
+// involved — so it works the same way against the live app and a static
+// export opened via file://.
 
+// Marks are scoped to the current org-pair (not global) so switching which
+// two orgs you're comparing doesn't carry over an unrelated deploy list.
+function deployStorageKey() {
+  const a = state.summary?.org_a_path || '';
+  const b = state.summary?.org_b_path || '';
+  return `deployMarks::${a}::${b}`;
+}
+
+function loadDeployMarks() {
+  try {
+    const raw = localStorage.getItem(PREF_PREFIX + deployStorageKey());
+    if (!raw) return;
+    const names = JSON.parse(raw);
+    if (Array.isArray(names)) state.markedForDeploy = new Set(names);
+  } catch { /* storage unavailable or corrupt — start with an empty list */ }
+}
+
+function persistDeployMarks() {
+  try {
+    localStorage.setItem(PREF_PREFIX + deployStorageKey(), JSON.stringify([...state.markedForDeploy]));
+  } catch { /* storage unavailable, ignore */ }
+}
+
+function toggleDeployMark(name) {
+  if (!name) return;
+  if (state.markedForDeploy.has(name)) {
+    state.markedForDeploy.delete(name);
+  } else {
+    state.markedForDeploy.add(name);
+  }
+  persistDeployMarks();
+  updateDeployBadge();
+  renderVisibleWindow();       // refresh checkbox/row styling for visible rows
+  renderDeployToggleButton();  // reflect the change if this is the open class
+  if (domRefs.deployOverlay.classList.contains('visible')) renderDeployList();
+}
+
+function toggleDeployForSelected() {
+  if (!state.selectedClass) return;
+  toggleDeployMark(state.selectedClass.name);
+}
+
+function updateDeployBadge() {
+  const n = state.markedForDeploy.size;
+  domRefs.deployCountBadge.textContent = n;
+  domRefs.btnDeployList.classList.toggle('has-items', n > 0);
+}
+
+const ICON_DEPLOY_CHECK =
+  '<svg width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden="true">' +
+  '<path d="M2 6.3l2.3 2.3L10 3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+
+function renderDeployToggleButton() {
+  const cls = state.selectedClass;
+  const marked = !!(cls && state.markedForDeploy.has(cls.name));
+  domRefs.btnToggleDeploy.classList.toggle('active', marked);
+  domRefs.btnToggleDeploy.title = marked
+    ? 'Unmark this class from the deploy list'
+    : 'Mark this class for deployment';
+  domRefs.btnToggleDeploy.innerHTML = `${ICON_DEPLOY_CHECK} ${marked ? 'Marked' : 'Deploy'}`;
+}
+
+function deployNamesSorted() {
+  return [...state.markedForDeploy].sort((a, b) => a.localeCompare(b));
+}
+
+function openDeployList() {
+  renderDeployList();
+  domRefs.deployOverlay.classList.add('visible');
+  domRefs.btnDeployClose.focus();
+}
+
+function closeDeployList() {
+  domRefs.deployOverlay.classList.remove('visible');
+  domRefs.btnDeployList.focus();
+}
+
+function renderDeployList() {
+  const names = deployNamesSorted();
+  domRefs.deployPanelCount.textContent = names.length;
+  domRefs.deployEmpty.style.display = names.length === 0 ? 'block' : 'none';
+
+  const frag = document.createDocumentFragment();
+  for (const name of names) {
+    const meta = state.allClasses.find(c => c.name === name);
+    const cfg  = STATUS_CONFIG[meta?.status] || null;
+    const li   = document.createElement('li');
+    li.className = 'deploy-item';
+    li.innerHTML = `
+      <span class="class-item-dot ${cfg ? cfg.dotClass : 'dot-all'}"></span>
+      <span class="deploy-item-name">${escHtml(name)}</span>
+      <button class="deploy-item-remove" data-name="${escHtml(name)}" title="Remove from deploy list" aria-label="Remove ${escHtml(name)} from deploy list">✕</button>
+    `;
+    frag.appendChild(li);
+  }
+  domRefs.deployList.innerHTML = '';
+  domRefs.deployList.appendChild(frag);
+}
+
+function copyDeployNames() {
+  const names = deployNamesSorted();
+  if (names.length === 0) { showError('No classes marked yet'); return; }
+  if (!navigator.clipboard || !navigator.clipboard.writeText) {
+    showError('Clipboard not available in this browser');
+    return;
+  }
+  navigator.clipboard.writeText(names.join('\n'))
+    .then(() => showToast(`Copied ${names.length} class name${names.length !== 1 ? 's' : ''}`, 'info'))
+    .catch(() => showError('Could not copy list'));
+}
+
+// Client-generated content (not fetched from a server), so the Blob +
+// synthetic <a download> pattern is fine here — the export-reliability
+// caveat in exportDiff() above is specific to server-rendered HTML.
+function downloadBlob(filename, content, mime) {
+  const blob = new Blob([content], { type: mime });
+  const url  = URL.createObjectURL(blob);
+  const a    = document.createElement('a');
+  a.href     = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+function downloadDeployTxt() {
+  const names = deployNamesSorted();
+  if (names.length === 0) { showError('No classes marked yet'); return; }
+  downloadBlob('deploy-list.txt', names.join('\n') + '\n', 'text/plain;charset=utf-8');
+}
+
+// Standard Metadata API manifest — members are class names without the
+// .cls extension, matching what `sf project deploy` / the Ant migration
+// tool / Workbench expect for a package.xml-driven deployment.
+function downloadDeployPackageXml() {
+  const names = deployNamesSorted();
+  if (names.length === 0) { showError('No classes marked yet'); return; }
+  const members = names
+    .map(n => n.replace(/\.cls$/i, ''))
+    .map(n => `        <members>${escXml(n)}</members>`)
+    .join('\n');
+  const xml =
+    '<?xml version="1.0" encoding="UTF-8"?>\n' +
+    '<Package xmlns="http://soap.sforce.com/2006/04/metadata">\n' +
+    '    <types>\n' +
+    `${members}\n` +
+    '        <name>ApexClass</name>\n' +
+    '    </types>\n' +
+    '    <version>59.0</version>\n' +
+    '</Package>\n';
+  downloadBlob('package.xml', xml, 'application/xml;charset=utf-8');
+}
+
+function escXml(str) {
+  return String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+function clearDeployList() {
+  if (state.markedForDeploy.size === 0) return;
+  state.markedForDeploy.clear();
+  persistDeployMarks();
+  updateDeployBadge();
+  renderVisibleWindow();
+  renderDeployList();
+  renderDeployToggleButton();
+  showToast('Deploy list cleared', 'info');
+}
 
 // ─── Data Loading ─────────────────────────────────────────────────────────────
 // For a large org the backend scans both folders on a background thread
@@ -750,6 +985,13 @@ async function loadData() {
 
     updateCountBadges();
     renderDuplicatesWarning(summary);
+
+    // Marks are scoped to this org-pair (see deployStorageKey) and depend
+    // on org_a_path/org_b_path, which are only known once summary has
+    // loaded — restore them now, before the first render, so checkboxes
+    // and the header badge are correct from the start.
+    loadDeployMarks();
+    updateDeployBadge();
 
     state.allClasses = classes;
     state.dataLoaded = true;
@@ -873,6 +1115,7 @@ function renderClassList(classes) {
 function buildClassItemEl(cls, idx) {
   const cfg     = STATUS_CONFIG[cls.status] || STATUS_CONFIG.identical;
   const isActive = state.selectedClass?.name === cls.name;
+  const isMarked = state.markedForDeploy.has(cls.name);
   const stats   = cls.diff_stats || { lines_added: 0, lines_removed: 0 };
 
   // Build stat pill only for non-identical
@@ -889,13 +1132,14 @@ function buildClassItemEl(cls, idx) {
   }
 
   const btn = document.createElement('button');
-  btn.className  = 'class-item' + (isActive ? ' active' : '');
+  btn.className  = 'class-item' + (isActive ? ' active' : '') + (isMarked ? ' marked' : '');
   btn.dataset.name  = cls.name;
   btn.dataset.index = idx;
   btn.title      = cls.has_error ? `${cls.name} — one or more files could not be read` : cls.name;
   btn.setAttribute('role', 'option');
   btn.setAttribute('aria-selected', isActive ? 'true' : 'false');
   btn.innerHTML  = `
+    <span class="deploy-checkbox${isMarked ? ' checked' : ''}" data-name="${escHtml(cls.name)}" role="checkbox" aria-checked="${isMarked}" aria-label="Mark ${escHtml(cls.name)} for deployment" title="Mark for deployment"></span>
     <span class="class-item-dot ${cfg.dotClass}"></span>
     <span class="class-item-name">${highlightMatch(cls.name)}</span>
     ${cls.has_error ? '<span class="err-flag" title="Could not read one of the files — open to see details">⚠</span>' : ''}
@@ -1031,6 +1275,8 @@ function updateEditorHeader(cls) {
   const showNav = cls.status === 'modified';
   domRefs.btnPrevDiff.style.display   = showNav ? '' : 'none';
   domRefs.btnNextDiff.style.display   = showNav ? '' : 'none';
+
+  renderDeployToggleButton();
 }
 
 function displayDiff(detail) {
