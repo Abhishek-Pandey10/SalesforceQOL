@@ -14,7 +14,7 @@ SAMPLES_DIR = REPO_ROOT / "samples"
 
 def main():
     # Build index
-    idx = DiffIndex(str(SAMPLES_DIR / "sample_org1"), str(SAMPLES_DIR / "sample_org2"))
+    idx = DiffIndex(str(SAMPLES_DIR / "org1" / "classes"), str(SAMPLES_DIR / "org2" / "classes"))
     summary = idx.get_summary()
     print("=== SUMMARY ===")
     for k, v in summary.items():

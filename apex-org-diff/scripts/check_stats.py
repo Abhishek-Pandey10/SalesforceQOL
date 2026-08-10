@@ -12,7 +12,7 @@ SAMPLES_DIR = REPO_ROOT / "samples"
 
 
 def main():
-    idx = DiffIndex(str(SAMPLES_DIR / "sample_org1"), str(SAMPLES_DIR / "sample_org2"))
+    idx = DiffIndex(str(SAMPLES_DIR / "org1" / "classes"), str(SAMPLES_DIR / "org2" / "classes"))
     classes = idx.get_all_meta()
     print("=== DIFF STATS IN METADATA ===")
     for c in classes:

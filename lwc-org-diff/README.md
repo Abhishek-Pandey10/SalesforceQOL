@@ -233,9 +233,13 @@ folder at the repo root.
 <repo root>/
 │
 ├── samples/
-│   ├── create_sample_lwc_orgs.py
-│   ├── sample_lwc_org1/
-│   └── sample_lwc_org2/
+│   ├── create_sample_orgs.py
+│   ├── org1/
+│   │   ├── classes/         ← used by apex-org-diff
+│   │   └── lwc/              ← used by lwc-org-diff
+│   └── org2/
+│       ├── classes/
+│       └── lwc/
 │
 ├── apex-org-diff/
 │
@@ -266,10 +270,10 @@ folder at the repo root.
 ### Development scripts
 
 ```bash
-python ../samples/create_sample_lwc_orgs.py   # (re)generate sample_lwc_org1 / sample_lwc_org2
+python ../samples/create_sample_orgs.py       # (re)generate the org1 / org2 fixtures (classes + lwc)
 python scripts/test_backend.py                # exercises DiffIndex + FastAPI app end-to-end
 python scripts/check_stats.py                 # prints component- and file-level diff stats
-python lwc_diff.py ../samples/sample_lwc_org1 ../samples/sample_lwc_org2   # try it on the fixtures
+python lwc_diff.py ../samples/org1/lwc ../samples/org2/lwc   # try it on the fixtures
 ```
 
 ---

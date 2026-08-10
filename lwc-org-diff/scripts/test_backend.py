@@ -13,7 +13,7 @@ SAMPLES_DIR = REPO_ROOT / "samples"
 
 
 def main():
-    idx = DiffIndex(str(SAMPLES_DIR / "sample_lwc_org1"), str(SAMPLES_DIR / "sample_lwc_org2"))
+    idx = DiffIndex(str(SAMPLES_DIR / "org1" / "lwc"), str(SAMPLES_DIR / "org2" / "lwc"))
     summary = idx.get_summary()
     print("=== SUMMARY ===")
     for k, v in summary.items():

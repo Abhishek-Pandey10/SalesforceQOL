@@ -12,7 +12,7 @@ SAMPLES_DIR = REPO_ROOT / "samples"
 
 
 def main():
-    idx = DiffIndex(str(SAMPLES_DIR / "sample_lwc_org1"), str(SAMPLES_DIR / "sample_lwc_org2"))
+    idx = DiffIndex(str(SAMPLES_DIR / "org1" / "lwc"), str(SAMPLES_DIR / "org2" / "lwc"))
     components = idx.get_all_meta()
     print("=== COMPONENT-LEVEL DIFF STATS ===")
     for c in components:

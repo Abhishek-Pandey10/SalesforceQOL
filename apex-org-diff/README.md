@@ -225,8 +225,12 @@ this tool.
 │
 ├── samples/                ← Shared fixture orgs, used by any QOL script
 │   ├── create_sample_orgs.py
-│   ├── sample_org1/
-│   └── sample_org2/
+│   ├── org1/
+│   │   ├── classes/         ← used by apex-org-diff
+│   │   └── lwc/              ← used by lwc-org-diff
+│   └── org2/
+│       ├── classes/
+│       └── lwc/
 │
 └── apex-org-diff/
     │
@@ -259,10 +263,10 @@ this tool.
 working directory:
 
 ```bash
-python ../samples/create_sample_orgs.py   # (re)generate the sample_org1 / sample_org2 fixtures
+python ../samples/create_sample_orgs.py   # (re)generate the org1 / org2 fixtures (classes + lwc)
 python scripts/test_backend.py            # exercises DiffIndex + FastAPI app end-to-end, prints results
 python scripts/check_stats.py             # prints diff line-stats for the sample orgs
-python apex_diff.py ../samples/sample_org1 ../samples/sample_org2   # try the tool on the fixtures
+python apex_diff.py ../samples/org1/classes ../samples/org2/classes   # try the tool on the fixtures
 ```
 
 ---
