@@ -1,0 +1,16 @@
+__pycache__/
+*.pyc
+*.pyo
+
+.venv/
+venv/
+env/
+
+*.egg-info/
+.pytest_cache/
+
+# Written to the project root at startup by lwc_diff.py (backend.export)
+LwcDiffOutput.html
+
+.vscode/
+.idea/
