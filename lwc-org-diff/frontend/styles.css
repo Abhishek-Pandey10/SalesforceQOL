@@ -41,7 +41,6 @@
   /* Layout */
   --sidebar-width:  290px;
   --header-height:  58px;
-  --file-tabs-height: 34px;
   --radius-sm:      6px;
   --radius-md:      8px;
   --radius-lg:      12px;
@@ -433,6 +432,24 @@ html, body {
   box-shadow: inset 2px 0 0 var(--clr-identical);
 }
 
+/* Per-file row shown beneath an expanded component. Indented under the
+   parent's checkbox+chevron; only padding-left/color differ from
+   .class-item so row height stays exactly the same as a component row -
+   the virtualized list assumes every row is rowHeight tall. */
+.file-item {
+  padding-left: 34px;
+  color: var(--text-muted);
+}
+
+.file-item:hover {
+  color: var(--text-secondary);
+}
+
+.file-item.active {
+  background: var(--bg-active);
+  color: var(--text-primary);
+}
+
 /* Custom checkbox (not a real <input>) — a real checkbox nested in a
    <button> row is invalid HTML and behaves inconsistently across browsers,
    so this is a styled span toggled via app.js. */
@@ -466,6 +483,43 @@ html, body {
   border: solid var(--bg-base);
   border-width: 0 1.6px 1.6px 0;
   transform: rotate(45deg);
+}
+
+/* Purely decorative disclosure chevron — the whole row (not just this
+   chevron) opens/closes the per-file rows, so this has no click handling
+   of its own; it only reflects expanded/collapsed state. */
+.expand-toggle {
+  flex-shrink: 0;
+  width: 10px;
+  height: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-muted);
+}
+
+.expand-toggle::before {
+  content: '';
+  width: 0;
+  height: 0;
+  border-style: solid;
+  border-width: 3.5px 0 3.5px 5px;
+  border-color: transparent transparent transparent currentColor;
+  display: block;
+  transition: transform .12s;
+}
+
+.expand-toggle.expanded::before {
+  transform: rotate(90deg);
+}
+
+.class-item:hover .expand-toggle { color: var(--text-secondary); }
+
+/* Leaf components (single-file bundles) keep the reserved space so sibling
+   rows still line up, but the toggle itself isn't interactive. */
+.expand-toggle-disabled {
+  visibility: hidden;
+  pointer-events: none;
 }
 
 .class-item-dot {
@@ -661,64 +715,6 @@ html, body {
   margin: 0 2px;
 }
 
-/* ========== Bundle file tabs ========== */
-/* One LWC component = several files (.js, .html, .css, .js-meta.xml, ...).
-   This bar lets a reviewer switch which file's diff is shown without
-   leaving the component - each tab carries the same status dot used
-   elsewhere so a modified file jumps out immediately. */
-#file-tabs {
-  flex-shrink: 0;
-  height: var(--file-tabs-height);
-  display: none;   /* shown via JS once a component is selected */
-  align-items: stretch;
-  gap: 2px;
-  background: var(--bg-surface);
-  border-bottom: 1px solid var(--border-muted);
-  padding: 0 8px;
-  overflow-x: auto;
-  overflow-y: hidden;
-}
-
-#file-tabs.visible { display: flex; }
-
-#file-tabs::-webkit-scrollbar { height: 3px; }
-#file-tabs::-webkit-scrollbar-thumb { background: var(--border-subtle); }
-
-.file-tab {
-  flex-shrink: 0;
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 0 12px;
-  border: none;
-  background: transparent;
-  color: var(--text-secondary);
-  font-family: var(--font-mono);
-  font-size: 11.5px;
-  cursor: pointer;
-  border-bottom: 2px solid transparent;
-  transition: background .12s, color .12s, border-color .12s;
-  white-space: nowrap;
-}
-
-.file-tab:hover {
-  background: var(--bg-hover);
-  color: var(--text-primary);
-}
-
-.file-tab.active {
-  color: var(--text-primary);
-  border-bottom-color: var(--text-link);
-  background: var(--bg-base);
-}
-
-.file-tab .class-item-dot { flex-shrink: 0; }
-
-.file-tab-err {
-  color: #f85149;
-  font-size: 10px;
-}
-
 /* Column label bar */
 #editor-columns {
   flex-shrink: 0;
@@ -872,7 +868,6 @@ html, body {
 #search-input:focus-visible,
 .filter-tab:focus-visible,
 .class-item:focus-visible,
-.file-tab:focus-visible,
 .toolbar-btn:focus-visible,
 #btn-shortcuts:focus-visible,
 .path-badge-value:focus-visible,

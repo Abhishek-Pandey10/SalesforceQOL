@@ -233,14 +233,18 @@ def _render_diff_body(file_detail: dict) -> Tuple[str, str, str]:
         code_b = None
 
     if code_a is None and code_b is None:
-        lines_a = (org_a.get("content") or "").split("\n")
-        lines_b = (org_b.get("content") or "").split("\n")
+        # splitlines(), not split("\n"): the latter appends a phantom empty
+        # element whenever content ends in a newline (i.e. almost always),
+        # which renders as a bogus extra blank line, and makes two files
+        # differing only in trailing-newline presence show a fake diff.
+        lines_a = (org_a.get("content") or "").splitlines()
+        lines_b = (org_b.get("content") or "").splitlines()
         code_a, code_b = _diff_columns(lines_a, lines_b)
     else:
         if code_a is None:
-            code_a = _plain_column((org_a.get("content") or "").split("\n"))
+            code_a = _plain_column((org_a.get("content") or "").splitlines())
         if code_b is None:
-            code_b = _plain_column((org_b.get("content") or "").split("\n"))
+            code_b = _plain_column((org_b.get("content") or "").splitlines())
 
     warning_banner = ""
     if error_a or error_b:
@@ -331,8 +335,9 @@ body {{ display: flex; flex-direction: column; min-height: 100vh; }}
 def build_full_export_html(summary: dict, components_meta: List[dict], details: List[dict]) -> str:
     """
     Build a single, self-contained HTML file that looks and behaves like the
-    live app - same sidebar, search/filter, file tabs, Monaco diff editor -
-    but with the entire dataset embedded inline instead of fetched from a
+    live app - same sidebar with expandable per-component file rows,
+    search/filter, Monaco diff editor - but with the entire dataset embedded
+    inline instead of fetched from a
     backend. Open it directly (double-click, file://) with no server
     running.
 

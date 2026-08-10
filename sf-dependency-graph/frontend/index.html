@@ -1,0 +1,137 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>SF Dependency Graph — Apex/LWC Blast Radius</title>
+  <meta name="description" content="Obsidian-style dependency graph for one Salesforce org folder: see what an Apex class or LWC component touches, and what would break if you changed it." />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%230176d3'/%3E%3Cpath d='M9 20 a5 5 0 0 1 5 -8 a6 6 0 0 1 11 2 a4.5 4.5 0 0 1 -1 8.9 H10 a4 4 0 0 1 -1 -2.9 Z' fill='%23fff'/%3E%3C/svg%3E" />
+  <link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body>
+
+<div id="app">
+
+  <!-- ══════════════ HEADER ══════════════ -->
+  <header id="header">
+    <div id="header-logo">
+      <svg width="28" height="28" viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+        <rect width="32" height="32" rx="8" fill="#0176d3"/>
+        <path d="M9 20 a5 5 0 0 1 5 -8 a6 6 0 0 1 11 2 a4.5 4.5 0 0 1 -1 8.9 H10 a4 4 0 0 1 -1 -2.9 Z" fill="#fff"/>
+      </svg>
+      <span id="header-title">SF Dependency Graph</span>
+    </div>
+
+    <div id="header-org-path">
+      <span class="path-badge-label">Org</span>
+      <span class="path-badge-value" id="org-path" title="">Loading…</span>
+    </div>
+
+    <div id="header-summary" aria-live="polite"></div>
+
+    <button id="btn-full-graph" class="toolbar-btn" title="Reset to the full graph">
+      Full graph
+    </button>
+    <button id="btn-export" class="toolbar-btn toolbar-btn-export" title="Export the current view as a self-contained HTML file">
+      <svg width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden="true"><path d="M6 1v6.5M3.2 5.3L6 8l2.8-2.7" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/><path d="M1.5 9.5v1a1 1 0 001 1h7a1 1 0 001-1v-1" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      Export
+    </button>
+  </header>
+
+  <!-- ══════════════ MAIN ══════════════ -->
+  <div id="main">
+
+    <!-- ── SIDEBAR ── -->
+    <aside id="sidebar" aria-label="Nodes">
+      <div id="sidebar-controls">
+        <div id="search-wrapper" role="search">
+          <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+            <circle cx="6.5" cy="6.5" r="4.5" stroke="#484f58" stroke-width="1.5"/>
+            <path d="M10 10l3 3" stroke="#484f58" stroke-width="1.5" stroke-linecap="round"/>
+          </svg>
+          <input id="search-input" type="search" placeholder="Search class / component…" autocomplete="off" spellcheck="false" aria-label="Search nodes" />
+        </div>
+
+        <div id="type-filters" aria-label="Filter by node type">
+          <label class="type-filter"><input type="checkbox" data-type="apex_class" checked /><span class="type-dot dot-apex_class"></span>Classes</label>
+          <label class="type-filter"><input type="checkbox" data-type="apex_interface" checked /><span class="type-dot dot-apex_interface"></span>Interfaces</label>
+          <label class="type-filter"><input type="checkbox" data-type="apex_trigger" checked /><span class="type-dot dot-apex_trigger"></span>Triggers</label>
+          <label class="type-filter"><input type="checkbox" data-type="lwc_component" checked /><span class="type-dot dot-lwc_component"></span>LWC</label>
+        </div>
+
+        <div id="declutter-controls" aria-label="Reduce graph clutter">
+          <label class="type-filter" title="Hide bare type-reference and unused-import edges from the graph (still shown in the detail panel)">
+            <input type="checkbox" id="hide-low-signal-input" checked />
+            <span>Hide low-signal edges</span>
+          </label>
+          <div id="min-degree-row" title="Hide nodes with fewer than this many total connections (used-by + depends-on)">
+            <label for="min-degree-input">Min connections</label>
+            <input type="range" id="min-degree-input" min="0" max="10" value="0" step="1" />
+            <span id="min-degree-value">0</span>
+          </div>
+        </div>
+      </div>
+
+      <div id="node-list-wrapper" role="listbox" aria-label="Node list">
+        <div id="node-list"></div>
+        <p id="no-results" aria-live="polite">No nodes match your filter.</p>
+      </div>
+
+      <div id="sidebar-footer" aria-live="polite">Loading…</div>
+    </aside>
+
+    <!-- ── GRAPH CANVAS ── -->
+    <section id="graph-panel" aria-label="Dependency graph">
+      <div id="network"></div>
+
+      <div id="loading-overlay" aria-label="Loading" role="status">
+        <div class="spinner"></div>
+        <div id="loading-text">Building dependency graph…</div>
+      </div>
+
+      <div id="welcome-hint">
+        Click a node to see what it depends on and what depends on it. Hover
+        an edge to see why the two are connected. Heuristic, text-based
+        parsing — not a full Apex compiler.
+      </div>
+
+      <div id="landing-panel">
+        <div id="landing-title"></div>
+        <div id="landing-sub"></div>
+        <div id="landing-hotspots"></div>
+        <button id="btn-show-full-graph" class="toolbar-btn" type="button">Show full graph anyway</button>
+      </div>
+
+      <div id="legend">
+        <div class="legend-title">Node types</div>
+        <div class="legend-row"><span class="type-dot dot-apex_class"></span>Apex Class</div>
+        <div class="legend-row"><span class="type-dot dot-apex_interface"></span>Apex Interface</div>
+        <div class="legend-row"><span class="type-dot dot-apex_trigger"></span>Apex Trigger</div>
+        <div class="legend-row"><span class="type-dot dot-lwc_component"></span>LWC Component</div>
+        <div class="legend-title legend-title-spaced">Edge kinds</div>
+        <div class="legend-row"><span class="edge-swatch" style="background:#3fb950"></span>instantiate / composes</div>
+        <div class="legend-row"><span class="edge-swatch" style="background:#58a6ff"></span>calls / accesses</div>
+        <div class="legend-row"><span class="edge-swatch" style="background:#e3b341"></span>extends / implements</div>
+        <div class="legend-row"><span class="edge-swatch" style="background:#bc8cff"></span>LWC @wire / imperative</div>
+        <div class="legend-row"><span class="edge-swatch" style="background:#f85149"></span>unused import</div>
+      </div>
+    </section>
+
+    <!-- ── DETAIL PANEL ── -->
+    <aside id="detail-panel" aria-label="Node / edge detail">
+      <div id="detail-empty">Select a node to inspect its dependencies, or an edge to see the exact lines that create it.</div>
+      <div id="detail-content" style="display:none;"></div>
+    </aside>
+
+  </div>
+</div>
+
+<div id="error-toast" role="alert" aria-live="assertive"></div>
+
+<script src="https://unpkg.com/vis-network/standalone/umd/vis-network.min.js"></script>
+<script src="/static/app.js"></script>
+
+</body>
+</html>

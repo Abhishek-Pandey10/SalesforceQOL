@@ -4,10 +4,11 @@
  * Same shell and interaction model as apex-org-diff's frontend (search,
  * filter tabs, virtualized sidebar, keyboard nav, deploy list, HTML
  * export, whitespace/layout toggles) but one level deeper: an LWC
- * component is a *bundle* of files, so selecting a component shows a file
- * tab bar and the Monaco diff editor displays whichever file tab is
- * active. Monaco's built-in javascript/html/css/xml/json modes are used
- * (chosen per file extension) instead of a custom tokenizer.
+ * component is a *bundle* of files, so clicking a component row in the
+ * sidebar expands it in place to list its files, and the Monaco diff
+ * editor displays whichever file row is active. Monaco's built-in
+ * javascript/html/css/xml/json modes are used (chosen per file extension)
+ * instead of a custom tokenizer.
  */
 
 'use strict';
@@ -46,6 +47,7 @@ const state = {
   selectedFileIndex: -1,       // index into currentDetail.files
   dataLoaded:        false,
   markedForDeploy:   new Set(),  // component names marked for deployment
+  expandedComponents: new Set(), // component names expanded to show their per-file rows
 };
 
 // ─── DOM refs ─────────────────────────────────────────────────────────────────
@@ -58,6 +60,13 @@ const ROW_OVERSCAN = 6;
 let rowHeight = null;
 let _scrollRAF = null;
 let _resizeRAF = null;
+
+// Flat list of currently-visible sidebar rows (one entry per component, plus
+// one per file when that component is expanded) - rebuilt by
+// renderVisibleWindow(). Kept around so scrollRowIntoView() can translate a
+// component index into a row position that accounts for any expanded
+// components above it.
+let _visibleRows = [];
 
 // ─── Preferences (localStorage) ───────────────────────────────────────────────
 const PREF_PREFIX = 'lwcOrgDiff.';
@@ -87,7 +96,6 @@ document.addEventListener('DOMContentLoaded', () => {
     editorFileName:    $('editor-file-name'),
     editorStatusBadge: $('editor-status-badge'),
     editorInfo:        $('editor-info'),
-    fileTabs:          $('file-tabs'),
     monacoContainer:   $('monaco-container'),
     welcomeState:      $('welcome-state'),
     loadingOverlay:    $('loading-overlay'),
@@ -234,7 +242,9 @@ function initEvents() {
   });
 
   // Component list: one delegated click handler instead of one listener per
-  // row (rows are re-created on every scroll/filter).
+  // row (rows are re-created on every scroll/filter). Clicking anywhere on a
+  // component row (not just the disclosure chevron) opens it and reveals its
+  // file rows - there's no separate small hit-target to aim for.
   domRefs.classList.addEventListener('click', e => {
     const checkbox = e.target.closest('.deploy-checkbox');
     if (checkbox) {
@@ -248,16 +258,24 @@ function initEvents() {
     const idx = parseInt(btn.dataset.index, 10);
     const cmp = state.filteredComponents[idx];
     if (!cmp) return;
+
+    if (btn.classList.contains('file-item')) {
+      openComponentFile(cmp, idx, btn.dataset.file);
+      return;
+    }
+
+    const alreadyOpen = state.selectedComponent?.name === cmp.name;
     state.selectedIndex = idx;
     selectComponent(cmp, idx);
-  });
 
-  // File tabs (delegated - tabs are rebuilt per component)
-  domRefs.fileTabs.addEventListener('click', e => {
-    const tab = e.target.closest('.file-tab');
-    if (!tab) return;
-    const idx = parseInt(tab.dataset.index, 10);
-    selectFileByIndex(idx);
+    if ((cmp.file_count || 0) > 1) {
+      if (alreadyOpen) {
+        toggleComponentExpand(cmp.name);
+      } else if (!state.expandedComponents.has(cmp.name)) {
+        state.expandedComponents.add(cmp.name);
+        renderVisibleWindow();
+      }
+    }
   });
 
   // Re-render the visible window as the list scrolls.
@@ -445,10 +463,15 @@ function selectComponentByIndex(idx) {
   scrollRowIntoView(idx);
 }
 
-function scrollRowIntoView(idx) {
+function scrollRowIntoView(componentIdx) {
   if (rowHeight === null) return;
+  // Expanded components push subsequent rows down, so the row position for
+  // a given component index isn't just componentIdx * rowHeight - look up
+  // its actual position in the flattened row list built on the last render.
+  const rowIndex = _visibleRows.findIndex(r => r.type === 'component' && r.idx === componentIdx);
+  if (rowIndex < 0) return;
   const wrapper  = domRefs.classListWrapper;
-  const rowTop    = idx * rowHeight;
+  const rowTop    = rowIndex * rowHeight;
   const rowBottom = rowTop + rowHeight;
   if (rowTop < wrapper.scrollTop) {
     wrapper.scrollTop = rowTop;
@@ -866,11 +889,14 @@ function renderClassList(components) {
   renderVisibleWindow();
 }
 
-// Builds one row. Shared by the row-height probe and the real windowed render.
+// Builds one component row. Shared by the row-height probe and the real
+// windowed render.
 function buildClassItemEl(cmp, idx) {
   const cfg     = STATUS_CONFIG[cmp.status] || STATUS_CONFIG.identical;
   const isActive = state.selectedComponent?.name === cmp.name;
   const isMarked = state.markedForDeploy.has(cmp.name);
+  const isExpanded = state.expandedComponents.has(cmp.name);
+  const canExpand = (cmp.file_count || 0) > 1;
   const stats   = cmp.diff_stats || { lines_added: 0, lines_removed: 0 };
 
   let statHtml = '';
@@ -892,8 +918,10 @@ function buildClassItemEl(cmp, idx) {
   btn.title      = cmp.has_error ? `${cmp.name} — one or more files could not be read` : cmp.name;
   btn.setAttribute('role', 'option');
   btn.setAttribute('aria-selected', isActive ? 'true' : 'false');
+  if (canExpand) btn.setAttribute('aria-expanded', isExpanded ? 'true' : 'false');
   btn.innerHTML  = `
     <span class="deploy-checkbox${isMarked ? ' checked' : ''}" data-name="${escHtml(cmp.name)}" role="checkbox" aria-checked="${isMarked}" aria-label="Mark ${escHtml(cmp.name)} for deployment" title="Mark for deployment"></span>
+    <span class="expand-toggle${canExpand ? '' : ' expand-toggle-disabled'}${isExpanded ? ' expanded' : ''}" aria-hidden="true"></span>
     <span class="class-item-dot ${cfg.dotClass}"></span>
     <span class="class-item-name">${highlightMatch(cmp.name)}</span>
     <span class="file-count-chip" title="${cmp.file_count} file${cmp.file_count !== 1 ? 's' : ''} in bundle">${cmp.file_count}f</span>
@@ -903,11 +931,78 @@ function buildClassItemEl(cmp, idx) {
   return btn;
 }
 
+// Builds one per-file sub-row, shown beneath a component when it's expanded.
+// Reuses the same per-file metadata already fetched with /api/components -
+// no extra network round trip needed just to populate the tree.
+function buildFileItemEl(cmp, componentIdx, file) {
+  const cfg = STATUS_CONFIG[file.status] || STATUS_CONFIG.identical;
+  const isActiveFile = state.selectedComponent?.name === cmp.name
+    && state.currentDetail?.name === cmp.name
+    && state.currentDetail?.files?.[state.selectedFileIndex]?.name === file.name;
+  const stats = file.diff_stats || { lines_added: 0, lines_removed: 0 };
+
+  let statHtml = '';
+  if (file.status === 'modified') {
+    statHtml = `<span class="stat-pill">
+      <span class="stat-add">+${stats.lines_added}</span>
+      <span class="stat-del">−${stats.lines_removed}</span>
+    </span>`;
+  } else if (file.status === 'only_in_org_b') {
+    statHtml = `<span class="stat-pill"><span class="stat-add">+${stats.lines_added}</span></span>`;
+  } else if (file.status === 'only_in_org_a') {
+    statHtml = `<span class="stat-pill"><span class="stat-del">−${stats.lines_removed}</span></span>`;
+  }
+
+  const btn = document.createElement('button');
+  btn.className  = 'class-item file-item' + (isActiveFile ? ' active' : '');
+  btn.dataset.index = componentIdx;
+  btn.dataset.file  = file.name;
+  btn.title      = file.has_error ? `${file.name} — could not be fully read` : file.name;
+  btn.setAttribute('role', 'option');
+  btn.setAttribute('aria-selected', isActiveFile ? 'true' : 'false');
+  btn.innerHTML  = `
+    <span class="class-item-dot ${cfg.dotClass}"></span>
+    <span class="class-item-name">${escHtml(file.name)}</span>
+    ${file.has_error ? '<span class="err-flag" title="Could not read this file">⚠</span>' : ''}
+    ${statHtml}
+  `;
+  return btn;
+}
+
+// Flattens components + their (optional) expanded file rows into the single
+// list renderVisibleWindow virtualizes over, so a component with N files
+// expanded simply contributes N extra rows instead of needing a second
+// rendering path.
+function buildVisibleRows() {
+  const rows = [];
+  for (let idx = 0; idx < state.filteredComponents.length; idx++) {
+    const cmp = state.filteredComponents[idx];
+    rows.push({ type: 'component', cmp, idx });
+    if (state.expandedComponents.has(cmp.name) && cmp.files && cmp.files.length) {
+      for (const file of cmp.files) {
+        rows.push({ type: 'file', cmp, idx, file });
+      }
+    }
+  }
+  return rows;
+}
+
+function toggleComponentExpand(name) {
+  if (!name) return;
+  if (state.expandedComponents.has(name)) {
+    state.expandedComponents.delete(name);
+  } else {
+    state.expandedComponents.add(name);
+  }
+  renderVisibleWindow();
+}
+
 function renderVisibleWindow() {
   const wrapper  = domRefs.classListWrapper;
   const list     = domRefs.classList;
-  const components = state.filteredComponents;
-  const total    = components.length;
+  const rows     = buildVisibleRows();
+  _visibleRows   = rows;
+  const total    = rows.length;
 
   list.style.height = (total * rowHeight) + 'px';
 
@@ -922,9 +1017,12 @@ function renderVisibleWindow() {
   const end   = Math.min(total, Math.ceil((scrollTop + viewportH) / rowHeight) + ROW_OVERSCAN);
 
   const frag = document.createDocumentFragment();
-  for (let idx = start; idx < end; idx++) {
-    const el = buildClassItemEl(components[idx], idx);
-    el.style.top = (idx * rowHeight) + 'px';
+  for (let i = start; i < end; i++) {
+    const row = rows[i];
+    const el = row.type === 'component'
+      ? buildClassItemEl(row.cmp, row.idx)
+      : buildFileItemEl(row.cmp, row.idx, row.file);
+    el.style.top = (i * rowHeight) + 'px';
     frag.appendChild(el);
   }
 
@@ -965,11 +1063,11 @@ async function selectComponent(cmp, idx, wantedFile) {
   history.replaceState(null, '', url);
   document.title = `${cmp.name} — LWC Org Diff`;
 
-  $$('.class-item').forEach(el => {
-    const isActive = el.dataset.name === cmp.name;
-    el.classList.toggle('active', isActive);
-    el.setAttribute('aria-selected', isActive ? 'true' : 'false');
-  });
+  // Re-render rather than toggle .active on existing DOM nodes: with file
+  // sub-rows now in the mix, "is this the active row" depends on more than
+  // just a name match (component vs. file row, which file), so a full
+  // rebuild of the visible window is simpler than patching both row kinds.
+  if (rowHeight !== null) renderVisibleWindow();
 
   updateComponentHeader(cmp);
   showLoading(true);
@@ -987,8 +1085,6 @@ async function selectComponent(cmp, idx, wantedFile) {
     }
     if (requestId !== _selectRequestId) return; // a newer selection has since started
     state.currentDetail = detail;
-
-    renderFileTabs(detail);
 
     const files = detail.files || [];
     let fileIdx = 0;
@@ -1009,29 +1105,30 @@ async function selectComponent(cmp, idx, wantedFile) {
   }
 }
 
+// Handles a click on an expanded sidebar file row. If that component is
+// already open, just switch the active file tab - no need to re-fetch a
+// detail we already have. Otherwise fall through to the normal component
+// load, opening straight to the requested file.
+function openComponentFile(cmp, idx, fileName) {
+  if (state.selectedComponent?.name === cmp.name && state.currentDetail?.name === cmp.name) {
+    const files = state.currentDetail.files || [];
+    const foundIdx = files.findIndex(f => f.name.toLowerCase() === fileName.toLowerCase());
+    if (foundIdx >= 0) {
+      state.selectedIndex = idx;
+      selectFileByIndex(foundIdx);
+      return;
+    }
+  }
+  state.selectedIndex = idx;
+  selectComponent(cmp, idx, fileName);
+}
+
 function updateComponentHeader(cmp) {
   const cfg = STATUS_CONFIG[cmp.status] || STATUS_CONFIG.identical;
   domRefs.editorFileName.textContent    = cmp.name;
   domRefs.editorStatusBadge.textContent = cfg.label;
   domRefs.editorStatusBadge.className   = `class-item-badge ${cfg.badgeClass}`;
   renderDeployToggleButton();
-}
-
-// ─── File tabs ────────────────────────────────────────────────────────────────
-function renderFileTabs(detail) {
-  const files = detail.files || [];
-  domRefs.fileTabs.classList.toggle('visible', files.length > 0);
-  domRefs.fileTabs.innerHTML = files.map((f, idx) => {
-    const cfg = STATUS_CONFIG[f.status] || STATUS_CONFIG.identical;
-    const hasErr = !!(f.org_a?.error || f.org_b?.error);
-    return `
-      <button class="file-tab" data-index="${idx}" role="tab" aria-selected="false" title="${escHtml(f.name)}">
-        <span class="class-item-dot ${cfg.dotClass}"></span>
-        <span>${escHtml(f.name)}</span>
-        ${hasErr ? '<span class="file-tab-err" title="Could not fully read this file">⚠</span>' : ''}
-      </button>
-    `;
-  }).join('');
 }
 
 function currentFile() {
@@ -1047,11 +1144,9 @@ function selectFileByIndex(idx) {
   }
   state.selectedFileIndex = idx;
 
-  $$('.file-tab').forEach(el => {
-    const active = parseInt(el.dataset.index, 10) === idx;
-    el.classList.toggle('active', active);
-    el.setAttribute('aria-selected', active ? 'true' : 'false');
-  });
+  // Refresh the sidebar so its per-file rows (the only file navigation now)
+  // show the active-file highlight.
+  if (rowHeight !== null) renderVisibleWindow();
 
   const url = new URL(window.location.href);
   url.searchParams.set('file', files[idx].name);

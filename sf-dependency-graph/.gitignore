@@ -1,0 +1,16 @@
+__pycache__/
+*.pyc
+*.pyo
+
+.venv/
+venv/
+env/
+
+*.egg-info/
+.pytest_cache/
+
+# Written to the project root at startup by sf_dependency_graph.py (backend.export)
+DependencyGraphOutput.html
+
+.vscode/
+.idea/
