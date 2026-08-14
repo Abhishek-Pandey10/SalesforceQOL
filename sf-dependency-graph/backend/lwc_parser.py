@@ -29,6 +29,15 @@ _IMPORT_LWC_DEFAULT_RE = re.compile(
     r"""import\s+(\w+)\s+from\s+['"]c/(\w+)['"]"""
 )
 _CHILD_TAG_RE = re.compile(r"<c-([a-z0-9-]+)", re.IGNORECASE)
+_HTML_COMMENT_RE = re.compile(r"<!--.*?-->", re.DOTALL)
+
+
+def _strip_html_comments(text: str) -> str:
+    """Blank <!-- ... --> regions (length/newlines preserved) so a
+    commented-out child-component tag doesn't produce a composition edge."""
+    return _HTML_COMMENT_RE.sub(
+        lambda m: "".join(ch if ch == "\n" else " " for ch in m.group(0)), text,
+    )
 
 
 def _strip_js_comments_and_strings(text: str) -> str:
@@ -91,6 +100,55 @@ def _strip_js_comments_and_strings(text: str) -> str:
     return "".join(out)
 
 
+def _strip_js_comments_only(text: str) -> str:
+    """Blank out // and /* */ comments only, leaving string literals (all
+    three JS quote styles) intact - length/newlines preserved. Used before
+    import-regex scanning: the import target path lives inside a string
+    literal, which the string-blanking done by
+    _strip_js_comments_and_strings would erase, but a `//`- or
+    `/* */`-commented-out import line must still not produce a live edge -
+    see parse_lwc_js."""
+    out = list(text)
+    i, n = 0, len(text)
+    quote_chars = {"'", '"', "`"}
+    while i < n:
+        ch = text[i]
+        if ch in quote_chars:
+            delim = ch
+            j = i + 1
+            while j < n and text[j] != delim:
+                if text[j] == "\\" and j + 1 < n:
+                    j += 2
+                    continue
+                j += 1
+            i = (j + 1) if j < n else j
+        elif ch == "/" and i + 1 < n and text[i + 1] == "/":
+            j = i
+            while j < n and text[j] != "\n":
+                out[j] = " "
+                j += 1
+            i = j
+        elif ch == "/" and i + 1 < n and text[i + 1] == "*":
+            j = i
+            out[j] = " "
+            if j + 1 < n:
+                out[j + 1] = " "
+            j += 2
+            while j < n:
+                if j + 1 < n and text[j] == "*" and text[j + 1] == "/":
+                    out[j] = " "
+                    out[j + 1] = " "
+                    j += 2
+                    break
+                if text[j] != "\n":
+                    out[j] = " "
+                j += 1
+            i = j
+        else:
+            i += 1
+    return "".join(out)
+
+
 def _line_number(text: str, offset: int) -> int:
     return text.count("\n", 0, offset) + 1
 
@@ -116,16 +174,19 @@ def parse_lwc_js(
     """Parse one .js file inside an LWC bundle for Apex and LWC-to-LWC
     imports. Returns [(target_node_id, Occurrence), ...]."""
     stripped = _strip_js_comments_and_strings(content)
+    comments_only_stripped = _strip_js_comments_only(content)
     lines = content.splitlines()
     results: List[Tuple[str, Occurrence]] = []
 
-    # Import regexes run against the ORIGINAL content, not the comment/string
-    # -stripped text: the information we need (the apex/LWC target path) is
-    # itself inside a string literal, which stripping would blank out.
-    # `content` and `stripped` have identical length/newlines, so match
-    # offsets from here stay valid when passed into stripped-text scans below
-    # (e.g. _classify_apex_usage).
-    for m in _IMPORT_APEX_RE.finditer(content):
+    # Import regexes run against comments_only_stripped, not the raw content:
+    # the information we need (the apex/LWC target path) is itself inside a
+    # string literal, which the full comment+string stripping done for
+    # `stripped` would blank out - but a commented-out import line must not
+    # produce a live edge either, so only comments (not strings) are blanked
+    # here. `content`, `stripped`, and `comments_only_stripped` all have
+    # identical length/newlines, so match offsets from here stay valid when
+    # passed into stripped-text scans below (e.g. _classify_apex_usage).
+    for m in _IMPORT_APEX_RE.finditer(comments_only_stripped):
         alias, dotted_class, method = m.group(1), m.group(2), m.group(3)
         class_name = dotted_class.rsplit(".", 1)[-1]
         target_id = apex_symbol_table.get(class_name.lower())
@@ -143,10 +204,13 @@ def parse_lwc_js(
                 kind=usage,
                 caller_method=None,
                 detail=f"imported as `{alias}`, calls {class_name}.{method}()",
+                # Unused imports don't actually call anything at runtime -
+                # only wired/imperative usage should feed the method graph.
+                callee_method=method if usage != "apex_unused_import" else None,
             ),
         ))
 
-    for m in _IMPORT_LWC_DEFAULT_RE.finditer(content):
+    for m in _IMPORT_LWC_DEFAULT_RE.finditer(comments_only_stripped):
         alias, child_name = m.group(1), m.group(2)
         target_id = lwc_symbol_table.get(child_name.lower())
         if not target_id or target_id == self_id:
@@ -187,11 +251,12 @@ def parse_lwc_html(
 ) -> List[Tuple[str, Occurrence]]:
     """Parse one .html template inside an LWC bundle for child component
     tags (<c-child-name>). Returns [(target_node_id, Occurrence), ...]."""
+    stripped = _strip_html_comments(content)
     lines = content.splitlines()
     results: List[Tuple[str, Occurrence]] = []
     seen_lines: Dict[str, set] = {}
 
-    for m in _CHILD_TAG_RE.finditer(content):
+    for m in _CHILD_TAG_RE.finditer(stripped):
         kebab = m.group(1).rstrip("-")
         camel = _kebab_to_camel(kebab)
         target_id = lwc_symbol_table.get(camel.lower())

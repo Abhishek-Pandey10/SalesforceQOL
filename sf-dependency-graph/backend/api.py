@@ -67,6 +67,13 @@ def create_app(graph: DependencyGraph) -> FastAPI:
                 detail="Invalid node name. Must be a plain class/component name without path separators.",
             )
 
+    def _parse_bool_param(request: Request, name: str) -> bool:
+        raw = request.query_params.get(name, "").strip().lower()
+        return raw in ("1", "true", "yes")
+
+    def _parse_include_test(request: Request) -> bool:
+        return _parse_bool_param(request, "include_test")
+
     def _reject_if_ambiguous(g: DependencyGraph, name: str) -> None:
         """An Apex type and an LWC component can share a display name (e.g.
         class 'AccountCard' + LWC 'accountCard'); resolve_id() treats that
@@ -92,6 +99,25 @@ def create_app(graph: DependencyGraph) -> FastAPI:
         g: DependencyGraph = request.app.state.graph
         return JSONResponse(content=g.get_summary())
 
+    @app.get("/api/dead-code")
+    async def get_dead_code(request: Request) -> JSONResponse:
+        """
+        Apex methods unreachable from any live entry point found anywhere in
+        the scanned org, split into a `dead` bucket (unreachable at all) and
+        a `test_only` bucket (reachable only via @isTest code) - see
+        DependencyGraph.get_dead_code's docstring for exactly what's
+        excluded and why (annotated/`global`/platform-interface entry
+        points, and test methods themselves).
+
+        Optional query params:
+          - include_entry_points: 1/true to also return an
+            `entry_points_excluded` list (id/name/reason) of every method
+            that was skipped as a known entry point, for transparency.
+        """
+        g: DependencyGraph = request.app.state.graph
+        include_entry_points = _parse_bool_param(request, "include_entry_points")
+        return JSONResponse(content=g.get_dead_code(include_entry_points=include_entry_points))
+
     @app.get("/api/graph")
     async def get_graph(request: Request) -> JSONResponse:
         """
@@ -101,12 +127,17 @@ def create_app(graph: DependencyGraph) -> FastAPI:
           - types: comma-separated node types to include
                    (apex_class|apex_interface|apex_trigger|lwc_component)
           - q: search node name (case-insensitive substring)
+          - include_test: 1/true to include @isTest classes and their edges
+                           (default: excluded, since they usually just
+                           reflect shared test fixtures, not production
+                           coupling)
         """
         g: DependencyGraph = request.app.state.graph
         types_param: Optional[str] = request.query_params.get("types")
         types = [t.strip() for t in types_param.split(",") if t.strip()] if types_param else None
         search: Optional[str] = request.query_params.get("q", "").strip() or None
-        return JSONResponse(content=g.get_graph(types=types, search=search))
+        include_test = _parse_include_test(request)
+        return JSONResponse(content=g.get_graph(types=types, search=search, include_test=include_test))
 
     @app.get("/api/nodes/{name}/blast-radius")
     async def get_blast_radius(name: str, request: Request) -> JSONResponse:
@@ -116,10 +147,12 @@ def create_app(graph: DependencyGraph) -> FastAPI:
         Optional query params:
           - depth: hop count (int) or "all" for the whole connected component (default 2)
           - direction: both|upstream|downstream (default both)
+          - include_test: 1/true to traverse through @isTest classes/edges too
         """
         _validate_name(name)
         g: DependencyGraph = request.app.state.graph
         _reject_if_ambiguous(g, name)
+        include_test = _parse_include_test(request)
 
         depth_param = request.query_params.get("depth", "2")
         if depth_param.lower() == "all":
@@ -141,7 +174,7 @@ def create_app(graph: DependencyGraph) -> FastAPI:
         if direction not in ("both", "upstream", "downstream"):
             raise HTTPException(status_code=400, detail="direction must be one of: both, upstream, downstream")
 
-        result = g.blast_radius(name, depth=depth, direction=direction)
+        result = g.blast_radius(name, depth=depth, direction=direction, include_test=include_test)
         if result is None:
             raise HTTPException(status_code=404, detail=f"Node '{name}' not found.")
         return JSONResponse(content=result)
@@ -149,15 +182,28 @@ def create_app(graph: DependencyGraph) -> FastAPI:
     @app.get("/api/nodes/{name}/export")
     async def export_node(name: str, request: Request) -> Response:
         """Standalone HTML export of one node's blast radius (2-hop, both
-        directions) as a real file download."""
+        directions) as a real file download.
+
+        Optional query params:
+          - include_test: 1/true to include @isTest classes/edges, same as
+            the live view - without this, exporting a focus view with
+            "Include test classes" checked would silently produce a file
+            missing what's currently on screen.
+        """
         _validate_name(name)
         g: DependencyGraph = request.app.state.graph
         _reject_if_ambiguous(g, name)
-        result = g.blast_radius(name, depth=2, direction="both", occurrence_limit=None)
+        include_test = _parse_include_test(request)
+        result = g.blast_radius(
+            name, depth=2, direction="both", occurrence_limit=None, include_test=include_test,
+        )
         if result is None:
             raise HTTPException(status_code=404, detail=f"Node '{name}' not found.")
 
-        html = build_export_html(result, g.org_path)
+        try:
+            html = build_export_html(result, g.org_path)
+        except FileNotFoundError:
+            raise HTTPException(status_code=500, detail="Frontend not found.")
         safe_name = re.sub(r'[\\/:*?"<>|]', "_", name)
         filename = f"blast-radius-{safe_name}.html"
         return Response(
@@ -170,19 +216,28 @@ def create_app(graph: DependencyGraph) -> FastAPI:
         _validate_name(name)
         g: DependencyGraph = request.app.state.graph
         _reject_if_ambiguous(g, name)
-        detail = g.get_node_detail(name)
+        detail = g.get_node_detail(name, include_test=_parse_include_test(request))
         if detail is None:
             raise HTTPException(status_code=404, detail=f"Node '{name}' not found.")
         return JSONResponse(content=detail)
 
     @app.get("/api/edges/{source}/{target}")
     async def get_edge_detail(source: str, target: str, request: Request) -> JSONResponse:
+        """
+        Optional query params:
+          - include_test: 1/true to include test-only occurrences - without
+            this, the "load all occurrences" link (used when an edge's
+            occurrence list is truncated) could return more occurrences than
+            the truncated count it was loading the rest of, and could
+            resolve an edge that only exists via a test-only occurrence even
+            though the default (non-test) view says it doesn't exist.
+        """
         _validate_name(source)
         _validate_name(target)
         g: DependencyGraph = request.app.state.graph
         _reject_if_ambiguous(g, source)
         _reject_if_ambiguous(g, target)
-        detail = g.get_edge_detail(source, target)
+        detail = g.get_edge_detail(source, target, include_test=_parse_include_test(request))
         if detail is None:
             raise HTTPException(status_code=404, detail=f"No edge from '{source}' to '{target}'.")
         return JSONResponse(content=detail)
@@ -190,9 +245,18 @@ def create_app(graph: DependencyGraph) -> FastAPI:
     @app.get("/api/export")
     async def export_full_graph(request: Request) -> Response:
         """Standalone HTML export of the entire graph - opens directly with
-        no server running, same trick as the sibling tools' full export."""
+        no server running, same trick as the sibling tools' full export.
+
+        Optional query params:
+          - include_test: 1/true to include @isTest classes/edges, same as
+            the live view.
+        """
         g: DependencyGraph = request.app.state.graph
-        html = build_full_export_html(g.get_summary(), g.get_graph())
+        include_test = _parse_include_test(request)
+        try:
+            html = build_full_export_html(g.get_summary(), g.get_graph(include_test=include_test))
+        except FileNotFoundError:
+            raise HTTPException(status_code=500, detail="Frontend not found.")
         return Response(
             content=html, media_type="text/html",
             headers={"Content-Disposition": 'attachment; filename="DependencyGraphOutput.html"'},

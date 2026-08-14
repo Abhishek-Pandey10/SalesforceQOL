@@ -4,9 +4,11 @@ export.py - Builds self-contained HTML exports of the dependency graph.
 Same trick as the sibling tools' build_full_export_html: the real frontend
 (index.html/app.js/styles.css) is reused verbatim, with the dataset embedded
 inline as window.__EXPORT_DATA__ instead of fetched from a backend, so the
-file opens directly (file://, no server) and is fully interactive - the
+file opens directly (file://, no server) and is interactive - the
 frontend's blast-radius BFS, tooltips, and detail panels all run
-client-side against whatever data they're given, live or embedded.
+client-side against whatever data they're given, live or embedded. Still
+requires internet access to load vis-network from its CDN (see README);
+only the data/backend dependency is removed, not the CDN one.
 
 Two variants:
   - build_full_export_html: the whole graph, opened with no focus node.
@@ -15,6 +17,7 @@ Two variants:
 """
 from __future__ import annotations
 
+import html
 import json
 import re
 from pathlib import Path
@@ -37,18 +40,29 @@ def _build_page(payload: dict, title_suffix: str) -> str:
     payload_json = json.dumps(payload, ensure_ascii=False).replace("</", "<\\/")
 
     # Title replacement: the title tag is unlikely to be reformatted, so a
-    # plain string replace is fine here.
+    # plain string replace is fine here. title_suffix can embed a node name
+    # taken verbatim from scanned org data (an LWC bundle name comes
+    # straight from a filesystem directory name with no character
+    # restrictions - see app.js's buildNodeTooltip, which escapes for the
+    # same reason) - HTML-escaped here so it can't break out of the <title>
+    # tag and inject markup/script into the exported file.
     index_html = index_html.replace(
         "<title>SF Dependency Graph — Apex/LWC Blast Radius</title>",
-        f"<title>SF Dependency Graph — {title_suffix}</title>",
+        f"<title>SF Dependency Graph — {html.escape(title_suffix)}</title>",
         1,
     )
 
-    # Styles: anchored on the <!-- INJECT:STYLES --> marker comment so
-    # reformatting the <link> tag can never silently break the export.
+    # Styles/script: anchored on the marker comments so reformatting the
+    # <link>/<script> tags can never silently break the export. The
+    # replacement is passed as a function, not a string: re.sub treats a
+    # string repl as a mini escape language (\1, \g<...>, \n, ...), so any
+    # backslash that happens to appear in generated content - e.g. a
+    # control character in scanned org source rendered by json.dumps as
+    # \u00XX - would raise re.error or silently mangle the output. A
+    # function's return value is used verbatim, no escape processing.
     index_html = re.sub(
         r"<!--\s*INJECT:STYLES\s*--><link[^>]*/>",
-        f"<!-- INJECT:STYLES --><style>\n{styles_css}\n</style>",
+        lambda _m: f"<!-- INJECT:STYLES --><style>\n{styles_css}\n</style>",
         index_html,
         count=1,
     )
@@ -57,8 +71,10 @@ def _build_page(payload: dict, title_suffix: str) -> str:
     # as window.__EXPORT_DATA__ before the inlined app.js.
     index_html = re.sub(
         r"<!--\s*INJECT:SCRIPT\s*--><script[^>]*></script>",
-        f"<!-- INJECT:SCRIPT --><script>window.__EXPORT_DATA__ = {payload_json};</script>\n"
-        f"<script>\n{app_js}\n</script>",
+        lambda _m: (
+            f"<!-- INJECT:SCRIPT --><script>window.__EXPORT_DATA__ = {payload_json};</script>\n"
+            f"<script>\n{app_js}\n</script>"
+        ),
         index_html,
         count=1,
     )
