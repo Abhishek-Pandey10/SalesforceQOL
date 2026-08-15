@@ -153,7 +153,8 @@ const state = {
   allNodes: [], allEdges: [],
   nodeById: new Map(),
   edgesBySource: new Map(), edgesByTarget: new Map(),
-  edgeById: new Map(),          // composite key of the currently rendered graph only
+  edgeById: new Map(),          // composite key of the currently rendered (display-filtered) graph only
+  layoutEdges: null,             // last renderGraph's full, non-low-signal-filtered edge set - see renderGraph/relayout
   activeTypes: new Set(['apex_class', 'apex_interface', 'apex_trigger', 'lwc_component']),
   searchQuery: '',
   selectedNodeId: null,
@@ -422,11 +423,20 @@ function getVisibleGraph() {
     if (fn) { filteredNodes = filteredNodes.concat([fn]); idSet.add(state.focusId); }
   }
 
-  const filteredEdges = edges.filter((e) =>
-    idSet.has(e.source) && idSet.has(e.target) &&
-    (!state.hideLowSignalEdges || !LOW_SIGNAL_EDGE_KINDS.has(e.kind))
+  // layoutEdges: scoped to the visible node set, but NOT low-signal-filtered.
+  // Structural computations (which nodes count as one connected component
+  // for packComponentsIntoGrid's layout, and which fully_dead nodes have a
+  // live incoming edge for computeSoftenedDeadIds) must use this, not the
+  // display-filtered set below - otherwise hiding type_reference edges (the
+  // default) doesn't just declutter lines, it also fragments genuinely-
+  // connected classes into their own visually "isolated" island, or flips a
+  // softened-dead node to the strong "unambiguous delete candidate" marker,
+  // purely because their only connecting edge happens to be low-signal.
+  const layoutEdges = edges.filter((e) => idSet.has(e.source) && idSet.has(e.target));
+  const filteredEdges = layoutEdges.filter((e) =>
+    !state.hideLowSignalEdges || !LOW_SIGNAL_EDGE_KINDS.has(e.kind)
   );
-  return { nodes: filteredNodes, edges: filteredEdges };
+  return { nodes: filteredNodes, edges: filteredEdges, layoutEdges };
 }
 
 // ─── vis-network rendering ──────────────────────────────────────────────────
@@ -858,12 +868,17 @@ function toVisEdge(e) {
   };
 }
 
-function renderGraph(nodes, edges) {
+function renderGraph(nodes, edges, layoutEdges) {
   ensureNetwork();
   state.network.setOptions({ physics: { enabled: true } });
   state.edgeById = new Map(edges.map((e) => [`${e.source}=>${e.target}`, e]));
-  const positions = packComponentsIntoGrid(nodes, edges);
-  const softenedDeadIds = computeSoftenedDeadIds(nodes, edges);
+  // Structural edges (see getVisibleGraph's layoutEdges comment) - falls
+  // back to the drawn edge set when not given one (e.g. showLanding's
+  // renderGraph([], []) call), which is a no-op difference there anyway.
+  const structuralEdges = layoutEdges || edges;
+  state.layoutEdges = structuralEdges;
+  const positions = packComponentsIntoGrid(nodes, structuralEdges);
+  const softenedDeadIds = computeSoftenedDeadIds(nodes, structuralEdges);
   state.visNodes.clear();
   state.visNodes.add(nodes.map((n) => toVisNode(n, positions.get(n.id), softenedDeadIds.has(n.id))));
   state.visEdges.clear();
@@ -885,7 +900,11 @@ function renderGraph(nodes, edges) {
 function relayout() {
   if (!state.network || !state.visNodes || !state.visEdges) return;
   const nodes = state.visNodes.get();
-  const edges = state.visEdges.get().map((e) => ({ source: e.from, target: e.to }));
+  // state.layoutEdges (the full, non-low-signal-filtered set renderGraph
+  // last used) - NOT re-derived from state.visEdges, which only holds
+  // whatever's currently drawn and would silently drop low-signal edges
+  // from the recomputed layout too.
+  const edges = state.layoutEdges || state.visEdges.get().map((e) => ({ source: e.from, target: e.to }));
   const positions = packComponentsIntoGrid(nodes, edges);
   state.visNodes.update(nodes.map((n) => {
     const pos = positions.get(n.id);
@@ -907,7 +926,7 @@ function onNetworkClick(params) {
 function refreshGraph() {
   if (state.landingActive) return; // showLanding()/exitLanding() own the canvas while the landing state is up
   const visible = getVisibleGraph();
-  renderGraph(visible.nodes, visible.edges);
+  renderGraph(visible.nodes, visible.edges, visible.layoutEdges);
   populateSidebarList();
   const hintText = $('welcome-hint-text');
   if (state.mode === 'focus' && state.focusId) {
